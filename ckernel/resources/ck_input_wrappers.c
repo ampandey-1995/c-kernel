@@ -87,6 +87,11 @@ struct input_fp {
 
 static struct input_fp ifp = {0};
 
+// Resolve lazily: shared libraries (e.g. ROCr via libomptarget) may call these
+// wrappers from their constructors before ck_setup has run.
+#define CK_REAL(name)                                                          \
+  (ifp.name ? ifp.name : (ifp.name = dlsym(RTLD_NEXT, #name)))
+
 static void ck_request_input(FILE *stream);
 
 static void __attribute__((constructor)) ck_setup(void) {
@@ -225,20 +230,20 @@ static void ck_request_input(FILE *stream) {
 int getc(FILE *stream) {
   CKDEBUG("requesting input");
   ck_request_input(stream);
-  return ifp.fgetc(stream);
+  return CK_REAL(fgetc)(stream);
 }
 
 int fgetc(FILE *stream) {
   CKDEBUG("requesting input");
   ck_request_input(stream);
-  return ifp.fgetc(stream);
+  return CK_REAL(fgetc)(stream);
 }
 
 #if NEED_FN(gets_s)
 char *gets_s(char *str, rsize_t n) {
   CKDEBUG("requesting input");
   ck_request_input(stdin);
-  return ifp.gets_s(str, n);
+  return CK_REAL(gets_s)(str, n);
 }
 #endif
 
@@ -246,20 +251,20 @@ char *gets_s(char *str, rsize_t n) {
 char *gets(char *str) {
   CKDEBUG("requesting input");
   ck_request_input(stdin);
-  return ifp.gets(str);
+  return CK_REAL(gets)(str);
 }
 #endif
 
 char *fgets(char *s, int size, FILE *stream) {
   CKDEBUG("requesting input");
   ck_request_input(stream);
-  return ifp.fgets(s, size, stream);
+  return CK_REAL(fgets)(s, size, stream);
 }
 
 int getchar(void) {
   CKDEBUG("requesting input");
   ck_request_input(stdin);
-  return ifp.getchar();
+  return CK_REAL(getchar)();
 }
 
 /**
@@ -281,13 +286,13 @@ int getchar(void) {
  *   and investigate whether we can reliably detect unconsumed data in stdin.
  */
 int vfscanf_and_eat_newline(FILE *stream, const char *format, va_list args) {
-  int result = ifp.vfscanf(stream, format, args);
+  int result = CK_REAL(vfscanf)(stream, format, args);
 #if defined(CKERNEL_EAT_NEWLINE)
   if (stream == stdin) {
     CKDEBUG("consuming stdin until newline removed or EOF");
     int c = EOF;
     do {
-      c = ifp.fgetc(stream);
+      c = CK_REAL(fgetc)(stream);
     } while ((c != '\n') && (c != EOF));
     CKDEBUG("finished consuming stdin");
   }
@@ -333,7 +338,7 @@ int scanf_s(const char *format, ...) {
   ck_request_input(stdin);
   va_list args;
   va_start(args, format);
-  int result = ifp.vfscanf_s(stdin, format, args);
+  int result = CK_REAL(vfscanf_s)(stdin, format, args);
   va_end(args);
   return result;
 }
@@ -343,7 +348,7 @@ int fscanf_s(FILE *restrict stream, const char *restrict format, ...) {
   ck_request_input(stream);
   va_list args;
   va_start(args, format);
-  int result = ifp.vfscanf_s(stream, format, args);
+  int result = CK_REAL(vfscanf_s)(stream, format, args);
   va_end(args);
   return result;
 }
@@ -351,13 +356,13 @@ int fscanf_s(FILE *restrict stream, const char *restrict format, ...) {
 int vscanf_s(const char *format, va_list args) {
   CKDEBUG("requesting input");
   ck_request_input(stdin);
-  return ifp.vfscanf_s(stdin, format, args);
+  return CK_REAL(vfscanf_s)(stdin, format, args);
 }
 
 int vfscanf_s(FILE *stream, const char *format, va_list args) {
   CKDEBUG("requesting input");
   ck_request_input(stream);
-  return ifp.vfscanf_s(stream, format, args);
+  return CK_REAL(vfscanf_s)(stream, format, args);
 }
 #endif
 
@@ -365,12 +370,12 @@ int vfscanf_s(FILE *stream, const char *format, va_list args) {
 ssize_t getline(char **lineptr, size_t *n, FILE *stream) {
   CKDEBUG("requesting input");
   ck_request_input(stream);
-  return ifp.getdelim(lineptr, n, '\n', stream);
+  return CK_REAL(getdelim)(lineptr, n, '\n', stream);
 }
 
 ssize_t getdelim(char **lineptr, size_t *n, int delimiter, FILE *stream) {
   CKDEBUG("requesting input");
   ck_request_input(stream);
-  return ifp.getdelim(lineptr, n, delimiter, stream);
+  return CK_REAL(getdelim)(lineptr, n, delimiter, stream);
 }
 #endif
