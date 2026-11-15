@@ -9,6 +9,7 @@ import shutil
 import sys
 from argparse import Namespace
 from contextlib import contextmanager
+from functools import partial
 from typing import List, Optional
 
 from . import resource
@@ -18,6 +19,8 @@ from .base_kernel import BaseKernel
 from .util import (
     STDERR,
     Lang,
+    ansi_to_html,
+    strip_ansi,
     error,
     error_from_exception,
     get_environment_variables,
@@ -27,7 +30,6 @@ from .util import (
     temporary_directory,
     is_macOS,
 )
-
 
 class AutoCompileKernel(BaseKernel):
     """Auto compile C/C++ cells"""
@@ -45,6 +47,7 @@ class AutoCompileKernel(BaseKernel):
         "ARGS",
         "NOCOMPILE",
         "NOEXEC",
+        "ENV",
     ]
 
     def __init__(self, *args, **kwargs):
@@ -76,7 +79,7 @@ class AutoCompileKernel(BaseKernel):
         )
         self.log_info("%s", compile_cmd)
         with switch_directory(dirname):
-            result, _, stderr = asyncio.get_event_loop().run_until_complete(
+            result, _, stderr = asyncio.run(
                 compile_cmd.run_silent()
             )
         if result != 0:
@@ -275,20 +278,42 @@ class AutoCompileKernel(BaseKernel):
             return error("CompileFailed", "Compilation failed")
         if not args.should_exec:
             return success(self.execution_count)
-        run_exe = AsyncCommand(f"./{args.exe} {args.ARGS}", logger=self.log)
+
+        # Build the runtime environment prefix. Force AddressSanitizer to emit
+        # ANSI colours so its report can be rendered like a terminal below.
+        env_assignments = args.ENV.split() if args.ENV else []
+        env_keys = {a.split("=", 1)[0] for a in env_assignments if "=" in a}
+        if "ASAN_OPTIONS" not in env_keys:
+            existing = os.environ.get("ASAN_OPTIONS")
+            asan_value = (existing + ":" if existing else "") + "color=always"
+            env_assignments.append(f"ASAN_OPTIONS={asan_value}")
+        env_prefix = (" ".join(env_assignments) + " ") if env_assignments else ""
+
+        run_exe = AsyncCommand(
+            f"{env_prefix}./{args.exe} {args.ARGS}", logger=self.log
+        )
         self.print(f"$> {run_exe}")
+
+        # Buffer the executable's stderr so it can be rendered as terminal-styled
+        # HTML (colourised, dark background) instead of on Jupyter's pink stderr
+        # background. stdout keeps streaming live.
+        stderr_buffer: list[str] = []
         with self.active_command(
             run_exe
         ) as command, self.stdin_trigger.ready() as trigger:
             result, *_ = await command.run_interactive(
                 self.stream_stdout,
-                self.stream_stderr,
+                partial(self.gather_data, stderr_buffer),
                 self.write_input,
                 trigger,
             )
+        if stderr_buffer:
+            raw = "".join(stderr_buffer)
+            self.print_html(ansi_to_html(raw), plain=strip_ansi(raw))
         if result != 0:
+            # Report the non-zero exit so the sanitizer failure stays visible,
+            # but finish the cell "ok" so Jupyter Run All does not stop here.
             self.print(f"executable failed with exit code {result}", dest=STDERR)
-            return error("ExeFailed", "Executable failed")
         return success(self.execution_count)
 
     def parse_args(self, code: str) -> Namespace:
@@ -371,7 +396,14 @@ class AutoCompileKernel(BaseKernel):
         depends: str,
         exe: str,
     ) -> AsyncCommand:
-        return AsyncCommand(f"{compiler} {cflags} {name} {depends} {ldflags} -o {exe}")
+        # `cflags` may contain source-language flags such as `-x hip` that apply
+        # to every input file that follows them on the command line. Reset the
+        # input language with `-x none` after the source file so that object-file
+        # dependencies (e.g. ckernel-input-wrappers.o) are handled by extension
+        # instead of being treated as source code.
+        return AsyncCommand(
+            f"{compiler} {cflags} {name} -x none {depends} {ldflags} -o {exe}"
+        )
 
     def command_detect_main(self, objfile: str) -> AsyncCommand:
         if is_macOS:
