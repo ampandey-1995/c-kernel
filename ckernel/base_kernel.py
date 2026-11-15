@@ -130,6 +130,22 @@ class BaseKernel(IPythonKernel):
             self.iopub_socket, "stream", {"name": dest, "text": text + end}
         )
 
+    def print_html(self, html: str, plain: str | None = None):
+        """Emit rich HTML output to the notebook as display data.
+
+        A text/plain representation is included when available so exporters
+        that cannot render HTML (e.g. the LaTeX/PDF exporter) still capture
+        the output instead of dropping it.
+        """
+        data = {"text/html": html}
+        if plain is not None:
+            data["text/plain"] = plain
+        self.send_response(
+            self.iopub_socket,
+            "display_data",
+            {"data": data, "metadata": {}},
+        )
+
     def debug_msg(self, text: str):
         if self.debug:
             self.print(f"[DEBUG] {text}", dest=STDERR)
